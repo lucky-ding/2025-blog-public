@@ -1,12 +1,12 @@
 import { toBase64Utf8, getRef, createTree, createCommit, updateRef, createBlob, type TreeItem } from '@/lib/github-client'
 import { fileToBase64NoPrefix, hashFileSHA256 } from '@/lib/file-utils'
-import { prepareDualBlogsIndex } from '@/lib/blog-index'
+import { prepareBlogsIndex } from '@/lib/blog-index'
 import { getAuthToken } from '@/lib/auth'
 import { GITHUB_CONFIG } from '@/consts'
 import type { ImageItem } from '../types'
 import { getFileExt } from '@/lib/utils'
 import { toast } from 'sonner'
-import { readAdminIndexJson } from '@/lib/blog-index'
+import { formatDateTimeLocal } from '../stores/write-store'
 
 export type PushBlogParams = {
 	form: {
@@ -16,6 +16,8 @@ export type PushBlogParams = {
 		tags: string[]
 		date?: string
 		summary?: string
+		hidden?: boolean
+		category?: string
 	}
 	cover?: ImageItem | null
 	images?: ImageItem[]
@@ -25,27 +27,8 @@ export type PushBlogParams = {
 
 export async function pushBlog(params: PushBlogParams): Promise<void> {
 	const { form, cover, images, mode = 'create', originalSlug } = params
-	const generateRandomSlug = async (attempt = 0): Promise<string> => {
-		if (attempt >= 3) {
-			toast.info('无法生成唯一的随机 Slug，请稍后重试')
-			throw new Error('无法生成唯一的随机 Slug，请稍后重试')
-		}
 
-		// 生成8位随机字符串
-		const randomSlug = Math.random().toString(36).slice(2, 10)
-		const indexList = await readAdminIndexJson()
-		if (indexList.some(item => item.slug === randomSlug)) {
-			// slug和已有的重复，重试
-			generateRandomSlug(attempt + 1)
-		}
-
-		return randomSlug
-	}
-
-	if (!form?.slug) {
-		toast.info('正在生成随机 slug...')
-		form.slug = await generateRandomSlug()
-	}
+	if (!form?.slug) throw new Error('需要 slug')
 
 	if (mode === 'edit' && originalSlug && originalSlug !== form.slug) {
 		throw new Error('编辑模式下不支持修改 slug，请保持原 slug 不变')
@@ -136,15 +119,17 @@ export async function pushBlog(params: PushBlogParams): Promise<void> {
 	})
 
 	// create blob for config.json
-	const dateStr = form.date || new Date().toISOString()
+	const dateStr = form.date || formatDateTimeLocal()
 	const config = {
 		title: form.title,
 		tags: form.tags,
 		date: dateStr,
 		summary: form.summary,
 		cover: coverPath,
-		hidden: form.hidden
+		hidden: form.hidden,
+		category: form.category
 	}
+
 	const configBlob = await createBlob(token, GITHUB_CONFIG.OWNER, GITHUB_CONFIG.REPO, toBase64Utf8(JSON.stringify(config, null, 2)), 'base64')
 	treeItems.push({
 		path: `${basePath}/config.json`,
@@ -153,33 +138,29 @@ export async function pushBlog(params: PushBlogParams): Promise<void> {
 		sha: configBlob.sha
 	})
 
-	const { adminJson, publicJson } = await prepareDualBlogsIndex(
+	// prepare and create blob for blogs index
+	const indexJson = await prepareBlogsIndex(
 		token,
 		GITHUB_CONFIG.OWNER,
 		GITHUB_CONFIG.REPO,
 		{
 			slug: form.slug,
-			...config
+			title: form.title,
+			tags: form.tags,
+			date: dateStr,
+			summary: form.summary,
+			cover: coverPath,
+			hidden: form.hidden,
+			category: form.category
 		},
 		GITHUB_CONFIG.BRANCH
 	)
-
-	// 3. 创建 Admin Index Blob (index-admin.json)
-	const adminIndexBlob = await createBlob(token, GITHUB_CONFIG.OWNER, GITHUB_CONFIG.REPO, toBase64Utf8(adminJson), 'base64')
-	treeItems.push({
-		path: 'public/blogs/index-admin.json',
-		mode: '100644',
-		type: 'blob',
-		sha: adminIndexBlob.sha
-	})
-
-	// 4. 创建 Public Index Blob (index.json)
-	const publicIndexBlob = await createBlob(token, GITHUB_CONFIG.OWNER, GITHUB_CONFIG.REPO, toBase64Utf8(publicJson), 'base64')
+	const indexBlob = await createBlob(token, GITHUB_CONFIG.OWNER, GITHUB_CONFIG.REPO, toBase64Utf8(indexJson), 'base64')
 	treeItems.push({
 		path: 'public/blogs/index.json',
 		mode: '100644',
 		type: 'blob',
-		sha: publicIndexBlob.sha
+		sha: indexBlob.sha
 	})
 
 	// create tree
