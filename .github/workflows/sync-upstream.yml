@@ -1,0 +1,60 @@
+name: Sync Upstream Code Only
+
+on:
+  workflow_dispatch: # 允许在 Actions 页面手动点击按钮触发
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 1. 检出你的仓库代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 必须拉取完整历史，否则无法合并
+
+      - name: 2. 拉取原作者更新并保护个人数据
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # 添加原作者仓库地址
+          git remote add upstream https://github.com/YYsuni/2025-blog-public.git
+          git fetch upstream
+
+          # 记录合并前你自己的当前版本状态
+          BEFORE_MERGE=$(git rev-parse HEAD)
+
+          # 合并上游 main 分支：遇到代码冲突优先保留你的修改 (-X ours)，且暂不提交 (--no-commit)
+          git merge upstream/main -X ours --no-commit --no-ff || true
+
+          # 【核心保护列表】将你的个人文章、图片、网站配置彻底重置回合并前的状态
+          # 使用 git clean + checkout 组合，确保原作者新写的文章或图片被彻底剔除，只留你的
+          PROTECT_PATHS=(
+            "public/blogs"
+            "public/images"
+            "src/consts.ts"
+            "src/config"
+          )
+
+          for path in "${PROTECT_PATHS[@]}"; do
+            # 1. 先移除合并带过来的该路径下的所有变动（包括原作者新增的文件）
+            git rm -rf --ignore-unmatch "$path"
+            git clean -fd "$path" || true
+            # 2. 从合并前的状态 (BEFORE_MERGE) 完整恢复你自己的目录/文件
+            git checkout "$BEFORE_MERGE" -- "$path" 2>/dev/null || true
+          done
+
+          # 如果你还在首页 (src/app/(home)/) 改过个人介绍卡片，不想被上游覆盖，
+          # 可以取消下面这行的注释：
+          # git checkout "$BEFORE_MERGE" -- "src/app/(home)/hi-card.tsx" 2>/dev/null || true
+
+          # 3. 检查除了个人数据外，是否有实质性的代码更新
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: sync upstream code and preserve personal content"
+            git push origin main
+            echo "✅ 同步成功！已更新上游功能并完整保留个人文章。"
+          else
+            echo "✨ 当前代码已是最新，无需更新。"
+          fi
